@@ -1,0 +1,4 @@
+# Ducky's updater and firmware, and QMK images: not distributed here
+*.exe
+*.bin
+__pycache__/
