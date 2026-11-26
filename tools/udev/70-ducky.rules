@@ -7,7 +7,7 @@
 # requires all ATTRS{} keys in one rule to match the same parent device: bInterfaceNumber (USB interface) and
 # idVendor (USB device) can't be combined. HID device names use upper-case hex.
 
-# App mode: only the vendor interface (USB interface 0) of each model's stock firmware: One 3, One 3 TKL, One 3
+# App mode: only the command interface (USB interface 0) of each model's stock firmware: One 3, One 3 TKL, One 3
 # RGB, One 3 TKL RGB, One 3 SF RGB, One 3 Mini RGB. The keyboard interfaces stay root-only so no user process can
 # read keystrokes from them.
 KERNEL=="hidraw*", DEVPATH=="*:1.0/0003:3233:1011.*|*:1.0/0003:3233:8011.*|*:1.0/0003:3233:1311.*|*:1.0/0003:3233:8311.*|*:1.0/0003:3233:5311.*|*:1.0/0003:3233:6311.*", MODE="0660", GROUP="plugdev", TAG+="uaccess"

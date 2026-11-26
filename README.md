@@ -74,6 +74,13 @@ The commands below use `python`. On Linux, use `python3` if `python` is not avai
 
 `--wait` gives you that many seconds to enter the bootloader after you start the command.
 
+`version` and `reboot-ldrom` support stock firmware V1.11, V1.12 (in the V1.13 updaters), V1.15, and V1.16. V1.11
+and V1.12 use an older protocol than V1.15 and later, and they have no version request, so `version` prints their
+USB serial number instead. On all of these versions the serial number is the version string, for example
+`DK-V1.11-220819`. V1.11 and V1.12 don't reply to the reboot request, so `reboot-ldrom` waits up to 10 seconds for
+the bootloader. The V1.11 and V1.12 support comes from reading their firmware and Ducky's V1.11 updater, and it has
+not yet been tested on a keyboard.
+
 IMAGE is a raw binary that starts at address 0, such as the `.bin` that `qmk compile` writes. `flash` refuses
 `.hex` and `.uf2` files.
 
@@ -107,7 +114,8 @@ python tools/extract_fw.py Ducky_One_3_TKL_RGB_V1.16.exe -o firmware/One_3_TKL_R
 
 The V1.11 and V1.13 updaters need no package. `extract_fw.py` prints the image's SHA-256, and `firmware/SHA256SUMS`
 lists the images of V1.11, V1.13, V1.15, and V1.16 for every model above. `flash` looks up the image there by its
-SHA-256 and takes the image's model from the entry's name.
+SHA-256 and takes the image's model from the entry's name. The entries are named after the updater: the V1.13
+updaters contain firmware that reports itself as V1.12 (`DK-V1.12-230201`).
 
 ## Test the restore first
 

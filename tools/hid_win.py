@@ -2,9 +2,10 @@
 """Windows HID access for isp.py, which loads this file on Windows in place of its sysfs and hidraw code.
 
 SetupAPI, cfgmgr32, hid.dll and kernel32 through ctypes; Python standard library only. Windows creates one HID
-device per top-level collection. isp.py uses two of them: the stock firmware's vendor collection (USB interface 0,
-usage page 0xFF00, usage 1) and the LDROM's only collection. Any user can open these read/write, so no driver and
-no administrator rights are needed. Windows refuses read/write opens of keyboard and mouse collections.
+device per top-level collection. isp.py uses two of them: the stock firmware's collection on USB interface 0
+(usage page 0xFF00, usage 1 in V1.15 and later; Generic Desktop, usage 0 in V1.11 and V1.12) and the LDROM's only
+collection. Any user can open these read/write, so no driver and no administrator rights are needed. Windows
+refuses read/write opens of keyboard and mouse collections.
 """
 import collections
 import re
@@ -77,6 +78,7 @@ HidD_GetAttributes = _fn(_hid, "HidD_GetAttributes", W.BOOLEAN, W.HANDLE, _P(HID
 HidD_GetPreparsedData = _fn(_hid, "HidD_GetPreparsedData", W.BOOLEAN, W.HANDLE, _P(_VP))
 HidD_FreePreparsedData = _fn(_hid, "HidD_FreePreparsedData", W.BOOLEAN, _VP)
 HidP_GetCaps = _fn(_hid, "HidP_GetCaps", W.LONG, _VP, _P(HIDP_CAPS))
+HidD_GetSerialNumberString = _fn(_hid, "HidD_GetSerialNumberString", W.BOOLEAN, W.HANDLE, _VP, W.ULONG)
 SetupDiGetClassDevsW = _fn(_setupapi, "SetupDiGetClassDevsW", W.HANDLE, _P(GUID), W.LPCWSTR, W.HWND, W.DWORD)
 SetupDiEnumDeviceInterfaces = _fn(_setupapi, "SetupDiEnumDeviceInterfaces", W.BOOL, W.HANDLE, _VP, _P(GUID),
                                   W.DWORD, _P(SP_DEVICE_INTERFACE_DATA))
@@ -113,6 +115,19 @@ def can_open(path):
         return False
     CloseHandle(h)
     return True
+
+
+def serial_number(path):
+    """The USB serial number string of a HID collection's device ("" if it has none or cannot be opened). Windows
+    may ask the device for its string descriptor; no HID report is sent."""
+    h = _open(path, 0)  # access 0 suffices, as for attributes and caps
+    if h is None:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(128)  # a USB string descriptor holds at most 126 UTF-16 code units
+        return buf.value if HidD_GetSerialNumberString(h, buf, ctypes.sizeof(buf)) else ""
+    finally:
+        CloseHandle(h)
 
 
 # --- discovery -------------------------------------------------------------------------------------------------

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Client for the Ducky One 3 stock bootloader (Nuvoton ISP-over-HID in LDROM) and for the app-mode vendor
-interface that asks the stock firmware to reboot into it.
+"""Client for the Ducky One 3 stock bootloader (Nuvoton ISP-over-HID in LDROM) and for the stock firmware's
+app-mode interface that asks it to reboot into the bootloader.
 
 Runs on Linux (sysfs and hidraw) and Windows (hid.dll and SetupAPI, in hid_win.py) with the Python standard
 library only. The framing is copied from the official updater (Updater_Nuvoton.MainForm, decompiled), which
 matches the OpenNuvoton NUC126BSP ISP_HID sample.
 
-The only flash write is `flash`: UPDATE_APROM plus its data packets, the updater's own sequence. UPDATE_CONFIG,
-ERASE_ALL, UPDATE_DATAFLASH and RESEND_PACKET are deliberately not implemented; send() refuses any code outside
-READ_ONLY, and accepts UPDATE_APROM and data packets only from flash(). RUN_APROM writes no flash: it sets
-ISPCTL.BS=0 and resets.
+The only flash write is `flash`: UPDATE_APROM plus its data packets, the updater's own sequence. (A reboot request
+makes the stock firmware rewrite its own handshake page, as Ducky's updaters do.) UPDATE_CONFIG, ERASE_ALL,
+UPDATE_DATAFLASH and RESEND_PACKET are deliberately not implemented; send() refuses any code outside READ_ONLY, and
+accepts UPDATE_APROM and data packets only from flash(). RUN_APROM writes no flash: it sets ISPCTL.BS=0 and resets.
 
     isp.py list                    # the keyboard's HID devices and whether they can be opened
-    isp.py version                 # app mode: firmware version string (vendor interface 0)
-    isp.py reboot-ldrom --yes      # app mode: stock reboot-to-LDROM request, exactly as the updater sends it
+    isp.py version                 # app mode: firmware version string (interface 0, or V1.11/V1.12's USB serial)
+    isp.py reboot-ldrom --yes      # app mode: stock reboot-to-LDROM request, as Ducky's updaters send it
     isp.py info [--wait 15]        # LDROM: CONNECT, SYNC_PACKNO, GET_FWVER, GET_DEVICEID, READ_CONFIG
     isp.py run-aprom               # LDROM: leave the bootloader and start the application
     isp.py flash IMAGE             # LDROM: every pre-flight check, then stop (dry run)
@@ -22,6 +22,15 @@ ISPCTL.BS=0 and resets.
 
 Ducky's LDROM erases more than the BSP: a reflash also resets the stock settings in data flash to factory
 defaults.
+
+The stock firmware takes app-mode requests on USB interface 0, in one of two generations (read in the V1.12, V1.15
+and V1.16 images of every model and the V1.11 images of all but the SF RGB; Ducky's V1.13 updaters carry V1.12):
+- V1.15 and later describe it as a vendor collection (usage page 0xFF00, usage 1) and use the updater's ':'
+  framing (app_request).
+- V1.11 and V1.12 describe it as Generic Desktop, usage 0, and take Nuvoton ISP-style packets. They act only on
+  0xCC (reboot to LDROM, legacy_reboot_request) and SYNC_PACKNO. They build LDROM-style replies but never seem to
+  send them, and they have no version request.
+In all of these, the USB serial number string is the version (DK-V1.11-220819); V1.15 and later reply with it.
 
 Every Ducky One 3 model except the Pro uses this bootloader and protocol (MODELS). `flash` reports whether the
 image's SHA-256 is listed in firmware/SHA256SUMS, the known images; a listed name like One_3_TKL_RGB_V1.16 gives
@@ -56,8 +65,13 @@ APP_IDS = {(0x3233, pid) for pid in MODELS}
 QMK_IDS = {(0x3233, 0x2108)}  # doombadroid's ducky/one3/rgb
 LDROM_IDS = {(0x3233, pid - 1) for pid in MODELS} | {(0x0416, 0x3F00)}  # the updaters accept Nuvoton's IDs too
 ALL_IDS = APP_IDS | QMK_IDS | LDROM_IDS
-VENDOR_PAGE, VENDOR_USAGE = 0xFF00, 1  # the stock app's vendor interface (USB interface 0)
+# The stock app's interface 0, which takes the app-mode requests. No other interface of any model has either
+# top-level collection. V1.15 and later: a vendor collection. V1.11 and V1.12: Generic Desktop, usage 0.
+VENDOR_PAGE, VENDOR_USAGE = 0xFF00, 1
 VENDOR_DESC_PREFIX = bytes.fromhex("0600ff0901")  # its report descriptor: Usage Page (0xFF00), Usage (1)
+LEGACY_PAGE, LEGACY_USAGE = 0x0001, 0
+LEGACY_DESC_PREFIX = bytes.fromhex("05010900")  # Usage Page (Generic Desktop), Usage (0)
+LEGACY_REBOOT = 0xCC  # V1.11 and V1.12 only: the ISP-style command that reboots into the LDROM
 
 CMD_CONNECT, CMD_SYNC_PACKNO, CMD_GET_FWVER = 0xAE, 0xA4, 0xA6
 CMD_GET_DEVICEID, CMD_READ_CONFIG, CMD_RUN_APROM = 0xB1, 0xA2, 0xAB
@@ -90,14 +104,18 @@ CBS = {  # CONFIG0[7:6], NUC126 TRM. Bit 1: 1 = APROM, 0 = LDROM; bit 0: 0 = IAP
 
 class Node:
     """A HID node of one of the IDs above. path is what Hid opens (/dev/hidrawN, or a Windows device path); phys is
-    the USB port. vendor: the node's report descriptor is the stock app's vendor collection."""
+    the USB port. iface: "vendor" or "legacy" if the node's top-level collection is that of the stock app's
+    interface 0 in V1.15 and later or in V1.11 and V1.12, else None. Both are kind app-vendor; legacy tells them
+    apart."""
 
-    def __init__(self, path, ids, phys, vendor):
+    def __init__(self, path, ids, phys, iface):
         self.path, self.ids, self.phys = path, ids, phys
+        self.legacy = False
         if ids in LDROM_IDS:
             self.kind = "ldrom"
         elif ids in APP_IDS:
-            self.kind = "app-vendor" if vendor else "app-other"
+            self.kind = "app-vendor" if iface else "app-other"
+            self.legacy = iface == "legacy"
         elif ids in QMK_IDS:
             self.kind = "qmk"
         else:
@@ -112,7 +130,9 @@ class Node:
     def __str__(self):
         ok = "rw ok" if can_open(self.path) else "no access"
         model = f"  {self.model}" if self.model and self.kind != "qmk" else ""
-        return f"{self.path}  {self.ids[0]:04x}:{self.ids[1]:04x}  {self.kind:10}{model}  {self.phys}  ({ok})"
+        legacy = "  (V1.11/V1.12 protocol)" if self.legacy else ""
+        return (f"{self.path}  {self.ids[0]:04x}:{self.ids[1]:04x}  {self.kind:10}{model}{legacy}  {self.phys}  "
+                f"({ok})")
 
 
 # --- Linux: sysfs and hidraw ---------------------------------------------------------------------------------
@@ -127,8 +147,9 @@ def nodes():
             desc = open(f"{d}/device/report_descriptor", "rb").read()
         except (OSError, KeyError, ValueError):
             continue
-        n = Node("/dev/" + os.path.basename(d), (int(vid, 16), int(pid, 16)), uevent.get("HID_PHYS", ""),
-                 desc.startswith(VENDOR_DESC_PREFIX))
+        iface = ("vendor" if desc.startswith(VENDOR_DESC_PREFIX) else
+                 "legacy" if desc.startswith(LEGACY_DESC_PREFIX) else None)
+        n = Node("/dev/" + os.path.basename(d), (int(vid, 16), int(pid, 16)), uevent.get("HID_PHYS", ""), iface)
         if n.kind:
             found.append(n)
     return found
@@ -136,6 +157,16 @@ def nodes():
 
 def can_open(path):
     return os.access(path, os.R_OK | os.W_OK)
+
+
+def usb_serial(path):
+    """The USB serial number string of the device a hidraw node belongs to ("" if none), as the kernel read it at
+    enumeration (HID_UNIQ). Nothing is sent to the device."""
+    try:
+        lines = open(f"/sys/class/hidraw/{os.path.basename(path)}/device/uevent").read().splitlines()
+    except OSError:
+        return ""
+    return dict(line.split("=", 1) for line in lines if "=" in line).get("HID_UNIQ", "")
 
 
 class HidDevice:
@@ -166,12 +197,15 @@ if sys.platform == "win32":
     hid_win = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(hid_win)
 
+    IFACES = {(VENDOR_PAGE, VENDOR_USAGE): "vendor", (LEGACY_PAGE, LEGACY_USAGE): "legacy"}
+
     def nodes():
-        found = [Node(c.path, (c.vid, c.pid), c.location, (c.page, c.usage) == (VENDOR_PAGE, VENDOR_USAGE))
+        found = [Node(c.path, (c.vid, c.pid), c.location, IFACES.get((c.page, c.usage)))
                  for c in hid_win.hid_collections(ALL_IDS)]
         return [n for n in found if n.kind]
 
     can_open = hid_win.can_open
+    usb_serial = hid_win.serial_number
 
     def HidDevice(path):
         try:
@@ -219,7 +253,21 @@ class Hid:
         self.dev.close()
 
 
-# --- app mode (stock firmware, vendor interface 0) -------------------------------------------------------
+# --- app mode (stock firmware, interface 0) --------------------------------------------------------------
+
+def app_node(dev):
+    """(path, legacy) of the stock app's interface 0: the node --dev names, or else the only one present. A --dev
+    path that nodes() does not show as app-vendor gets the protocol of V1.15 and later."""
+    if not dev:
+        n = find("app-vendor")
+        return n.path, n.legacy
+    same = os.path.normcase(dev)  # Windows device paths are case-insensitive
+    match = [n for n in nodes() if n.kind == "app-vendor" and os.path.normcase(n.path) == same]
+    if not match:
+        print(f"note: `list` does not show {dev} as app-vendor; using the protocol of V1.15 and later",
+              file=sys.stderr)
+    return dev, bool(match) and match[0].legacy
+
 
 def app_request(hid, body, pkt_id, cmd, mode, timeout=2.0):
     """Updater framing: [0]=0, [1]=':', [2]=packet id, [3]=length, [4]=type, [5]=cmd, [6]=rw, [7]=mode, [8..]."""
@@ -233,7 +281,20 @@ def app_request(hid, body, pkt_id, cmd, mode, timeout=2.0):
     return None
 
 
-def app_version(path, verbose=False):
+def legacy_reboot_request(hid):
+    """V1.11 and V1.12: the ISP-style command 0xCC that their updaters send to reboot into the LDROM (RGB V1.11
+    updater: 0x422c28 -> 0x423430). The updaters put a running packet number in [4:8]; the firmware ignores it, so
+    this sends 0. The firmware builds an LDROM-style reply but never seems to send it: only an IN-complete event loads
+    interface 0's IN endpoint (RGB V1.11: 0xa1f4 -> 0xa236), and nothing arms it first. The only sign of success is
+    the LDROM enumerating."""
+    hid.write(struct.pack("<II", LEGACY_REBOOT, 0).ljust(64, b"\x00"))
+
+
+def app_version(path, legacy, verbose=False):
+    """The firmware's version string, or None. V1.11 and V1.12 have no version request; their USB serial number
+    string is the version, as it is in V1.15 and later, which reply with it."""
+    if legacy:
+        return usb_serial(path) or None
     hid = Hid(path, verbose)
     pkt_id = os.getpid() & 0x7F | 1
     # type 1, cmd 1 (READ_CONFIG), rw 1, mode 1 (VERSION)
@@ -243,33 +304,47 @@ def app_version(path, verbose=False):
 
 
 def cmd_version(args):
-    text = app_version(args.dev or find("app-vendor").path, args.verbose)
+    path, legacy = app_node(args.dev)
+    text = app_version(path, legacy, args.verbose)
     if text is None:
-        sys.exit("no reply")
-    print(f"version reply: {text!r}  (the updater shows {text[3:8]!r})")
+        sys.exit("no USB serial number string" if legacy else "no reply")
+    if legacy:
+        print(f"USB serial number: {text!r}  (V1.11 and V1.12 have no version request)")
+    else:
+        print(f"version reply: {text!r}  (the updater shows {text[3:8]!r})")
 
 
 def cmd_reboot_ldrom(args):
     if not args.yes:
         sys.exit("this reboots the keyboard into its bootloader (it stops typing until it leaves); pass --yes")
-    hid = Hid(args.dev or find("app-vendor").path, args.verbose)
-    pkt_id = os.getpid() & 0x7F | 1
-    # ApmodeCmdReboot: type 1, cmd 4 (SYS_SETTING), rw 0, mode 1 (REBOOT), data 1
-    # Stock (RGB V1.16: 0x9b70 -> 0x8fd0) reboots only if the handshake page (0x3F800, 0x1F800 on the 128 KB part)
-    # holds "SuiL", which the LDROM seems to write at power-on; it then resets before replying. Otherwise it just
-    # sends the reply and keeps running.
+    path, legacy = app_node(args.dev)
+    hid = Hid(path, args.verbose)
+    # Stock (RGB V1.16: 0x9b70 -> 0x8fd0; RGB V1.11: 0xa3d0 -> 0x8b80) reboots only if the handshake page (0x3F800,
+    # 0x1F800 on the 128 KB part) holds "SuiL", which the LDROM seems to write at power-on; it then resets before
+    # replying. Otherwise V1.15 and later send the reply and keep running; V1.11 and V1.12 just keep running.
+    r = None
     try:
-        r = app_request(hid, bytes([1, 4, 0, 1, 1]), pkt_id, cmd=4, mode=1)
+        if legacy:
+            legacy_reboot_request(hid)
+        else:
+            # ApmodeCmdReboot: type 1, cmd 4 (SYS_SETTING), rw 0, mode 1 (REBOOT), data 1
+            r = app_request(hid, bytes([1, 4, 0, 1, 1]), os.getpid() & 0x7F | 1, cmd=4, mode=1)
     except OSError:  # the read fails with EIO when the device drops off the bus
-        r = None
         print("keyboard disconnected (rebooting)")
     hid.close()
+    not_honored = ("It only honors this request when its handshake flash page holds 'SuiL', which seems to be "
+                   "rewritten at power-on after a bootloader visit. Unplug and replug the keyboard, then retry.")
     if r is not None:
         time.sleep(3)
         if not any(n.kind == "ldrom" for n in nodes()):
-            sys.exit("the firmware replied but did not reboot. It only honors this request when its handshake "
-                     "flash page holds 'SuiL', which seems to be rewritten at power-on after a bootloader visit. "
-                     "Unplug and replug the keyboard, then retry.")
+            sys.exit("the firmware replied but did not reboot. " + not_honored)
+    elif legacy:
+        deadline = time.monotonic() + 10
+        while not any(n.kind == "ldrom" for n in nodes()):
+            if time.monotonic() >= deadline:
+                sys.exit("the bootloader did not enumerate within 10 s, so the firmware did not reboot. "
+                         + not_honored)
+            time.sleep(0.25)
     print("waiting for the bootloader to enumerate...")
     n = find("ldrom", wait=10)
     print(f"bootloader present: {n}")
@@ -527,7 +602,7 @@ def cmd_flash(args):
     if app is None:
         print("no stock or QMK keyboard enumerated within 10 s")
     elif app.kind == "app-vendor":
-        print(f"stock app present: {app}; version reply {app_version(app.path)!r}")
+        print(f"stock app present: {app}; version {app_version(app.path, app.legacy)!r}")
     else:
         print(f"{app.kind} present: {app}")
 
