@@ -40,10 +40,10 @@ the reboot request. To leave it without flashing, unplug and replug the keyboard
 
 Every stock firmware supports two chips:
 
-| Chip | Flash | PDID | CONFIG1 (data flash base) |
-|---|---|---|---|
-| NUC1261SG4AE | 256 KB | 0x01205212 | 0x00033200 |
-| NUC1261SE4AE | 128 KB | 0x01205213 | 0x00013200 |
+| Chip | Flash | PDID | CONFIG1 (data flash base), V1.12 and later | Up to V1.11 |
+|---|---|---|---|---|
+| NUC1261SG4AE | 256 KB | 0x01205212 | 0x00033200 | 0x00032800 |
+| NUC1261SE4AE | 128 KB | 0x01205213 | 0x00013200 | 0x00012800 |
 
 `isp.py info` shows which one your keyboard has.
 
@@ -81,7 +81,7 @@ IMAGE is a raw binary that starts at address 0, such as the `.bin` that `qmk com
 images. Before it erases anything, `flash` checks that:
 
 - the image starts with a plausible vector table and fits below the data flash;
-- the chip is one of the two above, with the CONFIG1 that the stock firmware sets for it;
+- the chip is one of the two above, with a CONFIG1 that the stock firmware sets for it;
 - CONFIG0 boots the bootloader first and enables data flash;
 - a listed stock image is for the keyboard's model, when the bootloader's USB ID names the model (after a reboot
   request).
