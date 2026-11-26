@@ -26,7 +26,7 @@ defaults.
 Every Ducky One 3 model except the Pro uses this bootloader and protocol (MODELS). `flash` reports whether the
 image's SHA-256 is listed in firmware/SHA256SUMS, the known images; a listed name like One_3_TKL_RGB_V1.16 gives
 the image's model. Before erasing anything it checks that the image's vector table is plausible (SP in RAM, Thumb
-reset/NMI/HardFault vectors inside the image), that the chip is one of CHIPS with the CONFIG1 that stock enforces
+reset/NMI/HardFault vectors inside the image), that the chip is one of CHIPS with a CONFIG1 that stock enforces
 for it, that CONFIG0 boots the LDROM with data flash enabled, that the image fits below the data flash base, and,
 when the bootloader's USB ID names a model, that a listed stock image is for that model. While writing, each
 reply's checksum must equal the sum of the packet sent. The BSP computes it after programming the chunk and
@@ -69,9 +69,12 @@ READ_ONLY = {
 CMD_UPDATE_APROM, CMD_DATA = 0xA0, 0x00  # a cmd-0 packet carries the next chunk of the last write command
 WRITE = {CMD_UPDATE_APROM: "UPDATE_APROM", CMD_DATA: "UPDATE_APROM data"}
 
-# PDID: (part, flash KB, CONFIG1). Every stock image supports both parts and rewrites CONFIG1 at boot to its data
-# flash base, 0x33200 minus 0x20000 on the 128 KB part (RGB V1.16: 0x479c, 0x4adc).
-CHIPS = {0x01205212: ("NUC1261SG4AE", 256, 0x00033200), 0x01205213: ("NUC1261SE4AE", 128, 0x00013200)}
+# PDID: (part, flash KB, CONFIG1 values). Every stock image supports both parts and rewrites CONFIG1 at boot to its
+# data flash base, minus 0x20000 on the 128 KB part: 0x33200 from V1.12 (RGB V1.16: 0x479c, 0x4adc), 0x32800 up to
+# V1.11 (RGB V1.11: 0x4898, 0x4bd4; built as 0xCA << 10, so not a literal). A board that never ran V1.12 or later
+# still reads the older value.
+CHIPS = {0x01205212: ("NUC1261SG4AE", 256, (0x00033200, 0x00032800)),
+         0x01205213: ("NUC1261SE4AE", 128, (0x00013200, 0x00012800))}
 RAM = (0x20000000, 0x20005000)  # both parts: 20 KB
 SHA256SUMS = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "firmware", "SHA256SUMS")
 FIRST_CHUNK, CHUNK = 48, 56  # UPDATE_APROM carries address + length + 48 bytes; data packets carry 56
@@ -432,9 +435,9 @@ def check_device(ident, image_len, models, board_model):
     pdid, c0, c1 = ident["PDID"], ident["CONFIG0"], ident["CONFIG1"]
     if pdid not in CHIPS:
         problems.append(f"PDID 0x{pdid:08X} is not one of " + ", ".join(f"0x{k:08X} ({v[0]})" for k, v in CHIPS.items()))
-    elif c1 != CHIPS[pdid][2]:
-        problems.append(f"CONFIG1 0x{c1:08X} is not 0x{CHIPS[pdid][2]:08X}, which stock firmware sets on the "
-                        f"{CHIPS[pdid][0]}")
+    elif c1 not in CHIPS[pdid][2]:
+        problems.append(f"CONFIG1 0x{c1:08X} is not " + " or ".join(f"0x{v:08X}" for v in CHIPS[pdid][2])
+                        + f", which stock firmware sets on the {CHIPS[pdid][0]}")
     if c0 & 0x80:  # CBS[7:6] = 1x
         problems.append(f"CONFIG0 0x{c0:08X} boots APROM first, so a failed flash could not be retried over USB")
     if c0 & 1:
